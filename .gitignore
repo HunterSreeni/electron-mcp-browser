@@ -3,3 +3,4 @@ storage/
 /tmp/
 *.png
 *.log
+.env

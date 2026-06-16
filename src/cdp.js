@@ -1,8 +1,10 @@
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 9222;
 
-export async function jsonGet(path, { host = DEFAULT_HOST, port = DEFAULT_PORT } = {}) {
-    const url = `http://${host}:${port}${path}`;
+const BLOCKED_SCHEMES = ['javascript:', 'file:', 'data:', 'chrome:', 'devtools:', 'blob:'];
+
+export async function jsonGet(urlPath, { host = DEFAULT_HOST, port = DEFAULT_PORT } = {}) {
+    const url = `http://${host}:${port}${urlPath}`;
     const response = await fetch(url);
     if (!response.ok) throw new Error(`GET ${url} failed: ${response.status} ${response.statusText}`);
     return response.json();
@@ -24,6 +26,7 @@ export class CdpSession {
         this.webSocketUrl = webSocketUrl;
         this.nextId = 1;
         this.pending = new Map();
+        this.eventHandlers = new Map();
         this.socket = null;
     }
 
@@ -42,13 +45,19 @@ export class CdpSession {
         });
 
         this.socket.addEventListener('message', (event) => {
-            const message = JSON.parse(event.data);
-            if (!message.id) return;
-            const pending = this.pending.get(message.id);
-            if (!pending) return;
-            this.pending.delete(message.id);
-            if (message.error) pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
-            else pending.resolve(message.result);
+            let message;
+            try { message = JSON.parse(event.data); } catch { return; }
+
+            if (message.id !== undefined) {
+                const pending = this.pending.get(message.id);
+                if (!pending) return;
+                this.pending.delete(message.id);
+                if (message.error) pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
+                else pending.resolve(message.result);
+            } else if (message.method) {
+                const handlers = this.eventHandlers.get(message.method);
+                if (handlers) [...handlers].forEach((fn) => fn(message.params));
+            }
         });
     }
 
@@ -69,7 +78,27 @@ export class CdpSession {
         });
     }
 
+    once(method, callback) {
+        const wrapper = (params) => {
+            this.off(method, wrapper);
+            callback(params);
+        };
+        if (!this.eventHandlers.has(method)) this.eventHandlers.set(method, []);
+        this.eventHandlers.get(method).push(wrapper);
+    }
+
+    off(method, callback) {
+        const handlers = this.eventHandlers.get(method);
+        if (!handlers) return;
+        const idx = handlers.indexOf(callback);
+        if (idx !== -1) handlers.splice(idx, 1);
+    }
+
     close() {
+        for (const { reject } of this.pending.values()) {
+            reject(new Error('CDP session closed'));
+        }
+        this.pending.clear();
         if (this.socket) this.socket.close();
     }
 }
@@ -121,14 +150,22 @@ export async function captureScreenshot(options = {}) {
 }
 
 export async function navigateTo(url, options = {}) {
+    if (BLOCKED_SCHEMES.some((s) => url.toLowerCase().startsWith(s))) {
+        throw new Error(`Blocked URL scheme: ${url}`);
+    }
     return withActivePage(async (session) => {
-        await session.send('Page.navigate', { url });
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('Page load timed out after 30s')), 30000);
+            session.once('Page.loadEventFired', () => { clearTimeout(timer); resolve(); });
+            session.send('Page.navigate', { url }).catch((err) => { clearTimeout(timer); reject(err); });
+        });
         return { ok: true, action: 'navigate', url };
     }, options);
 }
 
 export async function clickText(text, options = {}) {
     return withActivePage(async (session) => {
+        // Find the element and get its center coordinates
         const expression = `(() => {
             const wanted = ${JSON.stringify(text)}.trim().toLowerCase();
             const candidates = [...document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"], textarea, input, [contenteditable="true"]')];
@@ -142,34 +179,51 @@ export async function clickText(text, options = {}) {
             if (!el) return { ok: false, error: 'No visible clickable element matched text', text: ${JSON.stringify(text)} };
             const rect = el.getBoundingClientRect();
             el.scrollIntoView({ block: 'center', inline: 'center' });
-            el.click();
-            return { ok: true, action: 'clickText', matchedText: label(el), tag: el.tagName, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+            return { ok: true, matchedText: label(el), tag: el.tagName, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
         })()`;
-        const result = await session.send('Runtime.evaluate', { expression, returnByValue: true });
-        return result.result?.value || { ok: false, error: 'No result returned' };
+        const found = await session.send('Runtime.evaluate', { expression, returnByValue: true });
+        const info = found.result?.value;
+        if (!info?.ok) return info || { ok: false, error: 'No result returned' };
+
+        // Fire real pointer events via CDP instead of synthetic el.click()
+        const { x, y } = info;
+        for (const [type, button, clickCount] of [
+            ['mouseMoved', 'none', 0],
+            ['mousePressed', 'left', 1],
+            ['mouseReleased', 'left', 1],
+        ]) {
+            await session.send('Input.dispatchMouseEvent', { type, x, y, button, clickCount });
+        }
+        return { ok: true, action: 'clickText', matchedText: info.matchedText, tag: info.tag, x, y };
     }, options);
 }
 
 export async function typeText(selector, text, options = {}) {
     return withActivePage(async (session) => {
+        // Focus element and clear it using the native value setter to bypass React/Vue property interception
         const expression = `(() => {
-            const selector = ${JSON.stringify(selector)};
-            const text = ${JSON.stringify(text)};
-            const el = document.querySelector(selector);
-            if (!el) return { ok: false, error: 'Selector not found', selector };
+            const el = document.querySelector(${JSON.stringify(selector)});
+            if (!el) return { ok: false, error: 'Selector not found', selector: ${JSON.stringify(selector)} };
             el.scrollIntoView({ block: 'center', inline: 'center' });
             el.focus();
             if ('value' in el) {
-                el.value = text;
+                const nativeSetter = Object.getOwnPropertyDescriptor(el.constructor.prototype, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                if (nativeSetter) nativeSetter.call(el, '');
+                else el.value = '';
                 el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
             } else {
-                el.textContent = text;
-                el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+                el.textContent = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
             }
-            return { ok: true, action: 'typeText', selector, tag: el.tagName, length: text.length };
+            return { ok: true, tag: el.tagName };
         })()`;
-        const result = await session.send('Runtime.evaluate', { expression, returnByValue: true });
-        return result.result?.value || { ok: false, error: 'No result returned' };
+        const focusResult = await session.send('Runtime.evaluate', { expression, returnByValue: true });
+        const focusVal = focusResult.result?.value;
+        if (!focusVal?.ok) return focusVal || { ok: false, error: 'No result returned' };
+
+        // Insert text via CDP which works across React, Vue, Angular, and plain DOM
+        await session.send('Input.insertText', { text });
+        return { ok: true, action: 'typeText', selector, tag: focusVal.tag, length: text.length };
     }, options);
 }
