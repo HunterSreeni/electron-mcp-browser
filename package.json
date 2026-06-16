@@ -1,7 +1,7 @@
 {
   "name": "electronium-browser",
   "version": "0.1.0",
-  "description": "Local-first AI browser bridge using human Chrome sessions and Chrome DevTools Protocol.",
+  "description": "AI-agnostic local browser bridge - connects AI agents to your real logged-in Chrome session via Chrome DevTools Protocol.",
   "type": "module",
   "bin": {
     "electronium": "./src/electronium.js"
@@ -10,10 +10,23 @@
     "start": "node src/electronium.js serve",
     "check": "node --check src/electronium.js && node --check src/cdp.js",
     "status": "node src/electronium.js status",
-    "screenshot": "node src/electronium.js screenshot"
+    "screenshot": "node src/electronium.js screenshot",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version"
   },
   "engines": {
     "node": ">=20"
   },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser",
+    "cdp",
+    "chrome-devtools-protocol",
+    "ai",
+    "browser-automation",
+    "human-session"
+  ],
   "license": "MIT"
 }

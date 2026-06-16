@@ -1,0 +1,12 @@
+# Snyk (https://snyk.io) policy file
+version: v1.25.0
+
+# No production dependencies - this file exists to configure Snyk policy for the project.
+# Add ignores here if needed:
+# ignore:
+#   SNYK-JS-EXAMPLE-12345:
+#     - '*':
+#         reason: Not applicable - dev only
+#         expires: 2027-01-01T00:00:00.000Z
+ignore: {}
+patch: {}
