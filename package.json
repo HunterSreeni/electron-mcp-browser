@@ -1,0 +1,19 @@
+{
+  "name": "electronium-browser",
+  "version": "0.1.0",
+  "description": "Local-first AI browser bridge using human Chrome sessions and Chrome DevTools Protocol.",
+  "type": "module",
+  "bin": {
+    "electronium": "./src/electronium.js"
+  },
+  "scripts": {
+    "start": "node src/electronium.js serve",
+    "check": "node --check src/electronium.js && node --check src/cdp.js",
+    "status": "node src/electronium.js status",
+    "screenshot": "node src/electronium.js screenshot"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
