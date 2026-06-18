@@ -78,6 +78,11 @@ export class CdpSession {
         });
     }
 
+    on(method, callback) {
+        if (!this.eventHandlers.has(method)) this.eventHandlers.set(method, []);
+        this.eventHandlers.get(method).push(callback);
+    }
+
     once(method, callback) {
         const wrapper = (params) => {
             this.off(method, wrapper);
@@ -163,9 +168,18 @@ export async function navigateTo(url, options = {}) {
     }, options);
 }
 
+async function fireClick(session, x, y) {
+    for (const [type, button, clickCount] of [
+        ['mouseMoved', 'none', 0],
+        ['mousePressed', 'left', 1],
+        ['mouseReleased', 'left', 1],
+    ]) {
+        await session.send('Input.dispatchMouseEvent', { type, x, y, button, clickCount });
+    }
+}
+
 export async function clickText(text, options = {}) {
     return withActivePage(async (session) => {
-        // Find the element and get its center coordinates
         const expression = `(() => {
             const wanted = ${JSON.stringify(text)}.trim().toLowerCase();
             const candidates = [...document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"], textarea, input, [contenteditable="true"]')];
@@ -175,26 +189,52 @@ export async function clickText(text, options = {}) {
                 return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
             };
             const label = (el) => (el.innerText || el.value || el.getAttribute('aria-label') || el.title || '').trim().toLowerCase();
-            const el = candidates.find((node) => visible(node) && label(node).includes(wanted));
+            const visibles = candidates.filter((node) => visible(node));
+            // Prefer exact match first, fall back to substring - avoids "Login" hitting "Login with Microsoft"
+            const el = visibles.find((n) => label(n) === wanted) || visibles.find((n) => label(n).includes(wanted));
             if (!el) return { ok: false, error: 'No visible clickable element matched text', text: ${JSON.stringify(text)} };
-            const rect = el.getBoundingClientRect();
             el.scrollIntoView({ block: 'center', inline: 'center' });
+            const rect = el.getBoundingClientRect();
             return { ok: true, matchedText: label(el), tag: el.tagName, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
         })()`;
         const found = await session.send('Runtime.evaluate', { expression, returnByValue: true });
         const info = found.result?.value;
         if (!info?.ok) return info || { ok: false, error: 'No result returned' };
+        await fireClick(session, info.x, info.y);
+        return { ok: true, action: 'clickText', matchedText: info.matchedText, tag: info.tag, x: info.x, y: info.y };
+    }, options);
+}
 
-        // Fire real pointer events via CDP instead of synthetic el.click()
-        const { x, y } = info;
-        for (const [type, button, clickCount] of [
-            ['mouseMoved', 'none', 0],
-            ['mousePressed', 'left', 1],
-            ['mouseReleased', 'left', 1],
-        ]) {
-            await session.send('Input.dispatchMouseEvent', { type, x, y, button, clickCount });
+export async function clickSelector(selector, options = {}) {
+    return withActivePage(async (session) => {
+        const expression = `(() => {
+            const el = document.querySelector(${JSON.stringify(selector)});
+            if (!el) return { ok: false, error: 'Selector not found', selector: ${JSON.stringify(selector)} };
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            if (style.visibility === 'hidden' || style.display === 'none' || rect.width === 0 || rect.height === 0) {
+                return { ok: false, error: 'Element found but not visible', selector: ${JSON.stringify(selector)} };
+            }
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+            const r2 = el.getBoundingClientRect();
+            const label = (el.innerText || el.value || el.getAttribute('aria-label') || el.title || '').trim().slice(0, 80);
+            return { ok: true, label, tag: el.tagName, x: Math.round(r2.left + r2.width / 2), y: Math.round(r2.top + r2.height / 2) };
+        })()`;
+        const found = await session.send('Runtime.evaluate', { expression, returnByValue: true });
+        const info = found.result?.value;
+        if (!info?.ok) return info || { ok: false, error: 'No result returned' };
+        await fireClick(session, info.x, info.y);
+        return { ok: true, action: 'clickSelector', selector, label: info.label, tag: info.tag, x: info.x, y: info.y };
+    }, options);
+}
+
+export async function evaluate(expression, options = {}) {
+    return withActivePage(async (session) => {
+        const result = await session.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+        if (result.exceptionDetails) {
+            return { ok: false, error: result.exceptionDetails.text || 'JS exception', details: result.exceptionDetails };
         }
-        return { ok: true, action: 'clickText', matchedText: info.matchedText, tag: info.tag, x, y };
+        return { ok: true, value: result.result?.value };
     }, options);
 }
 
@@ -226,4 +266,90 @@ export async function typeText(selector, text, options = {}) {
         await session.send('Input.insertText', { text });
         return { ok: true, action: 'typeText', selector, tag: focusVal.tag, length: text.length };
     }, options);
+}
+
+export class NetworkMonitor {
+    constructor({ maxEvents = 500, cdpOptions = {} } = {}) {
+        this.maxEvents = maxEvents;
+        this.cdpOptions = cdpOptions;
+        this.session = null;
+        this.events = [];       // indexed by insertion order
+        this.byRequestId = {};  // requestId -> event (for response merging)
+        this.running = false;
+        this.tabUrl = null;
+    }
+
+    async start(options = {}) {
+        if (this.running) this.stop();
+        const opts = { ...this.cdpOptions, ...options };
+        const tab = await getActiveTab(opts);
+        this.session = new CdpSession(tab.webSocketDebuggerUrl);
+        await this.session.connect();
+        await this.session.send('Network.enable');
+
+        this.session.on('Network.requestWillBeSent', (p) => {
+            const ev = {
+                requestId: p.requestId,
+                url: p.request.url,
+                method: p.request.method,
+                resourceType: p.type || 'Other',
+                initiator: p.initiator?.type || 'other',
+                requestHeaders: p.request.headers,
+                postData: p.request.postData || null,
+                timestamp: p.timestamp,
+                status: null,
+                statusText: null,
+                responseHeaders: null,
+                mimeType: null,
+            };
+            this.byRequestId[p.requestId] = ev;
+            this.events.push(ev);
+            if (this.events.length > this.maxEvents) {
+                const removed = this.events.shift();
+                delete this.byRequestId[removed.requestId];
+            }
+        });
+
+        this.session.on('Network.responseReceived', (p) => {
+            const ev = this.byRequestId[p.requestId];
+            if (!ev) return;
+            ev.status = p.response.status;
+            ev.statusText = p.response.statusText;
+            ev.responseHeaders = p.response.headers;
+            ev.mimeType = p.response.mimeType;
+        });
+
+        this.running = true;
+        this.tabUrl = tab.url;
+        return { ok: true, tabUrl: tab.url };
+    }
+
+    async getResponseBody(requestId) {
+        if (!this.session) throw new Error('Network monitor is not running');
+        try {
+            const result = await this.session.send('Network.getResponseBody', { requestId });
+            return { ok: true, body: result.body, base64Encoded: result.base64Encoded };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    }
+
+    getEvents({ resourceType, method, urlContains, limit = 100 } = {}) {
+        let results = [...this.events];
+        if (resourceType) results = results.filter((e) => e.resourceType.toLowerCase() === resourceType.toLowerCase());
+        if (method) results = results.filter((e) => e.method.toLowerCase() === method.toLowerCase());
+        if (urlContains) results = results.filter((e) => e.url.includes(urlContains));
+        return results.slice(-limit);
+    }
+
+    clear() {
+        this.events = [];
+        this.byRequestId = {};
+    }
+
+    stop() {
+        if (this.session) this.session.close();
+        this.session = null;
+        this.running = false;
+    }
 }

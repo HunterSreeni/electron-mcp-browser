@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 import http from 'node:http';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { captureScreenshot, clickText, getPageSnapshot, listTabs, navigateTo, typeText } from './cdp.js';
+import { launchChrome, getLaunchCommand } from './launcher.js';
 
 const HOST = process.env.ELECTRONIUM_HOST || '127.0.0.1';
 const PORT = Number(process.env.ELECTRONIUM_PORT || 17373);
 const CDP_PORT = Number(process.env.ELECTRONIUM_CDP_PORT || 9222);
 const TOKEN = process.env.ELECTRONIUM_TOKEN || null;
-const SCREENSHOT_DIR = process.env.ELECTRONIUM_SCREENSHOT_DIR || '/tmp';
+const SCREENSHOT_DIR = process.env.ELECTRONIUM_SCREENSHOT_DIR || os.tmpdir();
 
 const ALLOWED_ORIGIN_PREFIXES = ['http://127.0.0.1', 'http://localhost', 'http://[::1]'];
 
@@ -114,7 +116,7 @@ async function main() {
         return;
     }
     if (command === 'screenshot') {
-        const out = process.argv[3] || '/tmp/electronium-screenshot.png';
+        const out = process.argv[3] || path.join(os.tmpdir(), 'electronium-screenshot.png');
         const shot = await captureScreenshot({ port: CDP_PORT });
         await fs.writeFile(out, Buffer.from(shot.data, 'base64'));
         console.log(JSON.stringify({ ok: true, url: shot.url, path: out }, null, 2));
@@ -139,26 +141,57 @@ async function main() {
         console.log(JSON.stringify(await typeText(selector, text, { port: CDP_PORT }), null, 2));
         return;
     }
+    if (command === 'launch') {
+        const result = launchChrome({ port: CDP_PORT });
+        process.stderr.write(`Launching Chrome (pid ${result.pid})\n`);
+        process.stderr.write(`Executable: ${result.chromePath}\n`);
+        process.stderr.write(`Profile:    ${result.dataDir}\n`);
+        process.stderr.write(`CDP port:   ${result.port}\n`);
+        // Poll until CDP is ready (up to 10 seconds)
+        for (let i = 0; i < 20; i++) {
+            try {
+                await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`);
+                console.log(JSON.stringify({ ok: true, ...result }));
+                return;
+            } catch { /* not ready yet */ }
+            await new Promise((r) => setTimeout(r, 500));
+        }
+        throw new Error(`Chrome did not expose CDP on port ${CDP_PORT} within 10 seconds`);
+    }
+    if (command === 'launch-cmd') {
+        const cmds = getLaunchCommand(CDP_PORT);
+        console.log(`Platform detected: ${cmds.current}\n`);
+        console.log('Windows:\n  ' + cmds.win32 + '\n');
+        console.log('macOS:\n  ' + cmds.darwin + '\n');
+        console.log('Linux:\n  ' + cmds.linux);
+        return;
+    }
     console.log(`Electronium Browser MVP
 
 Usage:
-  node src/electronium.js serve
-  node src/electronium.js status
-  node src/electronium.js tabs
-  node src/electronium.js screenshot /tmp/page.png
-  node src/electronium.js navigate https://example.com
-  node src/electronium.js click-text "Write"
-  node src/electronium.js type "textarea" "Draft text"
+  node src/electronium.js launch             Auto-detect and launch Chrome with CDP
+  node src/electronium.js launch-cmd         Print the manual Chrome launch command for your OS
+  node src/electronium.js serve              Start HTTP bridge on port 17373
+  node src/electronium.js status             Print current page URL, title, text preview
+  node src/electronium.js tabs               List all open tabs
+  node src/electronium.js screenshot [path]  Capture screenshot
+  node src/electronium.js navigate <url>     Navigate active tab to URL
+  node src/electronium.js click-text <text>  Click first visible element matching text
+  node src/electronium.js type <sel> <text>  Type text into CSS selector
 
-Before using, launch Chrome with remote debugging:
-  google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/electronium-chrome
+Manual Chrome launch commands by platform:
+  Windows:  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\\electronium-profile" --disable-blink-features=AutomationControlled
+  macOS:    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="~/Library/Application Support/electronium-profile" --disable-blink-features=AutomationControlled
+  Linux:    google-chrome --remote-debugging-port=9222 --user-data-dir="~/.config/electronium-profile" --disable-blink-features=AutomationControlled
 
-Environment variables (see .env.example):
+Environment variables:
   ELECTRONIUM_HOST            HTTP bridge bind address (default: 127.0.0.1)
   ELECTRONIUM_PORT            HTTP bridge port (default: 17373)
   ELECTRONIUM_CDP_PORT        Chrome DevTools port (default: 9222)
   ELECTRONIUM_TOKEN           Auth token for HTTP bridge (recommended)
-  ELECTRONIUM_SCREENSHOT_DIR  Safe directory for screenshot saves (default: /tmp)
+  ELECTRONIUM_SCREENSHOT_DIR  Safe directory for screenshot saves (default: os.tmpdir())
+  ELECTRONIUM_CHROME_PATH     Override Chrome executable path
+  ELECTRONIUM_CHROME_DIR      Override Chrome profile directory
 `);
 }
 

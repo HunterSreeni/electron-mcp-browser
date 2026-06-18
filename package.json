@@ -1,14 +1,17 @@
 {
   "name": "electronium-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-agnostic local browser bridge - connects AI agents to your real logged-in Chrome session via Chrome DevTools Protocol.",
   "type": "module",
   "bin": {
-    "electronium": "./src/electronium.js"
+    "electronium": "./src/electronium.js",
+    "electronium-mcp": "./src/mcp-server.js"
   },
   "scripts": {
     "start": "node src/electronium.js serve",
-    "check": "node --check src/electronium.js && node --check src/cdp.js",
+    "mcp": "node src/mcp-server.js",
+    "launch": "node src/electronium.js launch",
+    "check": "node --check src/electronium.js && node --check src/cdp.js && node --check src/launcher.js && node --check src/mcp-server.js",
     "status": "node src/electronium.js status",
     "screenshot": "node src/electronium.js screenshot",
     "version:patch": "npm version patch --no-git-tag-version",
