@@ -14,6 +14,28 @@ let actionCounter = 0;
 // Singleton network monitor - one persistent CDP session per MCP server process
 const networkMonitor = new NetworkMonitor({ maxEvents: 500 });
 
+const MAX_PENDING_ACTIONS = 50;
+const PENDING_TTL_MS = 10 * 60 * 1000;
+const BLOCKED_SCHEMES = ['javascript:', 'file:', 'data:', 'chrome:', 'devtools:', 'blob:'];
+const EVAL_BLOCKED_PATTERNS = ['document.cookie', 'localstorage', 'sessionstorage', '.password', 'indexeddb'];
+
+function cleanExpiredActions() {
+    const now = Date.now();
+    for (const [id, action] of pendingActions) {
+        if (action.expiresAt && now > action.expiresAt) pendingActions.delete(id);
+    }
+}
+
+function queueAction(type, args, reason) {
+    cleanExpiredActions();
+    if (pendingActions.size >= MAX_PENDING_ACTIONS) {
+        return { error: 'Action queue is full (50 pending). Approve or deny existing actions first.' };
+    }
+    const id = newActionId();
+    pendingActions.set(id, { id, type, args, reason, queuedAt: new Date().toISOString(), expiresAt: Date.now() + PENDING_TTL_MS });
+    return { id };
+}
+
 function newActionId() {
     return `act_${++actionCounter}_${Date.now()}`;
 }
@@ -151,23 +173,30 @@ const TOOLS = [
                 method: { type: 'string', description: 'Filter by HTTP method: GET, POST, PUT, DELETE, etc.' },
                 urlContains: { type: 'string', description: 'Filter to URLs containing this string' },
                 limit: { type: 'number', description: 'Max events to return (default 100)' },
+                minimal: { type: 'boolean', description: 'If true, return only url, method, status, resourceType per event (omits headers and postData)' },
             },
         },
     },
     {
         name: 'electronium_network_response_body',
-        description: 'Fetch the response body for a specific network request captured by the monitor. Use the requestId from electronium_network_events.',
+        description: 'Request the response body for a captured network request. Requires human approval before executing as response bodies may contain sensitive data. Use the requestId from electronium_network_events.',
         inputSchema: {
             type: 'object',
-            required: ['request_id'],
+            required: ['request_id', 'reason'],
             properties: {
                 request_id: { type: 'string', description: 'requestId from electronium_network_events' },
+                reason: { type: 'string', description: 'Why this response body is needed' },
             },
         },
     },
     {
         name: 'electronium_network_clear',
-        description: 'Clear the network event buffer.',
+        description: 'Clear the captured network event buffer. Does not stop the monitor - use electronium_network_stop to stop monitoring.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'electronium_network_stop',
+        description: 'Stop the network monitor and clear its event buffer. Closes the persistent CDP session used for monitoring.',
         inputSchema: { type: 'object', properties: {} },
     },
     // --- Launch tool ---
@@ -228,56 +257,41 @@ async function callTool(name, args) {
         const { url, reason } = args;
         if (!url) return errorResult('url is required');
         if (!reason) return errorResult('reason is required');
-        const id = newActionId();
-        pendingActions.set(id, { id, type: 'navigate', args: { url }, reason, queuedAt: new Date().toISOString() });
-        return jsonContent({
-            ok: true,
-            pending: true,
-            action_id: id,
-            message: `Navigation to "${url}" is queued. Call electronium_approve("${id}") to execute or electronium_deny("${id}") to cancel.`,
-        });
+        if (BLOCKED_SCHEMES.some((s) => url.toLowerCase().startsWith(s))) {
+            return errorResult(`Blocked URL scheme: ${url}`);
+        }
+        const queued = queueAction('navigate', { url }, reason);
+        if (queued.error) return errorResult(queued.error);
+        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Navigation to "${url}" is queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
     }
 
     if (name === 'electronium_click_text') {
         const { text, reason } = args;
         if (!text) return errorResult('text is required');
         if (!reason) return errorResult('reason is required');
-        const id = newActionId();
-        pendingActions.set(id, { id, type: 'click_text', args: { text }, reason, queuedAt: new Date().toISOString() });
-        return jsonContent({
-            ok: true,
-            pending: true,
-            action_id: id,
-            message: `Click on "${text}" is queued. Call electronium_approve("${id}") to execute or electronium_deny("${id}") to cancel.`,
-        });
+        const queued = queueAction('click_text', { text }, reason);
+        if (queued.error) return errorResult(queued.error);
+        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Click on "${text}" is queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
     }
 
     if (name === 'electronium_click_selector') {
         const { selector, reason } = args;
         if (!selector) return errorResult('selector is required');
         if (!reason) return errorResult('reason is required');
-        const id = newActionId();
-        pendingActions.set(id, { id, type: 'click_selector', args: { selector }, reason, queuedAt: new Date().toISOString() });
-        return jsonContent({
-            ok: true,
-            pending: true,
-            action_id: id,
-            message: `Click on selector "${selector}" is queued. Call electronium_approve("${id}") to execute or electronium_deny("${id}") to cancel.`,
-        });
+        const queued = queueAction('click_selector', { selector }, reason);
+        if (queued.error) return errorResult(queued.error);
+        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Click on selector "${selector}" is queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
     }
 
     if (name === 'electronium_evaluate') {
         const { expression, reason } = args;
         if (!expression) return errorResult('expression is required');
         if (!reason) return errorResult('reason is required');
-        const id = newActionId();
-        pendingActions.set(id, { id, type: 'evaluate', args: { expression }, reason, queuedAt: new Date().toISOString() });
-        return jsonContent({
-            ok: true,
-            pending: true,
-            action_id: id,
-            message: `JS evaluate queued. Call electronium_approve("${id}") to execute or electronium_deny("${id}") to cancel.`,
-        });
+        const blocked = EVAL_BLOCKED_PATTERNS.find((p) => expression.toLowerCase().includes(p));
+        if (blocked) return errorResult(`Expression blocked: contains "${blocked}". Use electronium_page_snapshot to read page content instead.`);
+        const queued = queueAction('evaluate', { expression }, reason);
+        if (queued.error) return errorResult(queued.error);
+        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `JS evaluate queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
     }
 
     if (name === 'electronium_type') {
@@ -285,14 +299,9 @@ async function callTool(name, args) {
         if (!selector) return errorResult('selector is required');
         if (text === undefined) return errorResult('text is required');
         if (!reason) return errorResult('reason is required');
-        const id = newActionId();
-        pendingActions.set(id, { id, type: 'type', args: { selector, text }, reason, queuedAt: new Date().toISOString() });
-        return jsonContent({
-            ok: true,
-            pending: true,
-            action_id: id,
-            message: `Type into "${selector}" is queued. Call electronium_approve("${id}") to execute or electronium_deny("${id}") to cancel.`,
-        });
+        const queued = queueAction('type', { selector, text }, reason);
+        if (queued.error) return errorResult(queued.error);
+        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Type into "${selector}" is queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
     }
 
     if (name === 'electronium_list_pending') {
@@ -312,6 +321,7 @@ async function callTool(name, args) {
         else if (action.type === 'click_selector') result = await clickSelector(action.args.selector, opts);
         else if (action.type === 'evaluate') result = await evaluate(action.args.expression, opts);
         else if (action.type === 'type') result = await typeText(action.args.selector, action.args.text, opts);
+        else if (action.type === 'network_response_body') result = await networkMonitor.getResponseBody(action.args.request_id);
         else return errorResult(`Unknown action type: ${action.type}`);
         return jsonContent({ ok: true, executed: action, result });
     }
@@ -340,20 +350,31 @@ async function callTool(name, args) {
             limit: args.limit,
         });
         if (events.length === 0) return textContent('No network events captured yet (or none match the filter).');
+        if (args.minimal) {
+            return jsonContent(events.map((e) => ({ requestId: e.requestId, url: e.url, method: e.method, status: e.status, resourceType: e.resourceType, initiator: e.initiator })));
+        }
         return jsonContent(events);
     }
 
     if (name === 'electronium_network_response_body') {
         if (!networkMonitor.running) return errorResult('Network monitor is not running. Call electronium_network_start first.');
-        const { request_id } = args;
+        const { request_id, reason } = args;
         if (!request_id) return errorResult('request_id is required');
-        const result = await networkMonitor.getResponseBody(request_id);
-        return jsonContent(result);
+        if (!reason) return errorResult('reason is required');
+        const queued = queueAction('network_response_body', { request_id }, reason);
+        if (queued.error) return errorResult(queued.error);
+        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Response body fetch for request "${request_id}" is queued. Call electronium_approve("${queued.id}") to execute.` });
     }
 
     if (name === 'electronium_network_clear') {
         networkMonitor.clear();
         return textContent('Network event buffer cleared.');
+    }
+
+    if (name === 'electronium_network_stop') {
+        if (!networkMonitor.running) return textContent('Network monitor is not running.');
+        networkMonitor.stop();
+        return textContent('Network monitor stopped and event buffer cleared.');
     }
 
     if (name === 'electronium_launch') {
@@ -405,6 +426,18 @@ async function handleMessage(message) {
         } catch (err) {
             return { jsonrpc: '2.0', id, result: errorResult(err.message) };
         }
+    }
+
+    if (method === 'ping') {
+        return { jsonrpc: '2.0', id, result: {} };
+    }
+
+    if (method === 'resources/list') {
+        return { jsonrpc: '2.0', id, result: { resources: [] } };
+    }
+
+    if (method === 'prompts/list') {
+        return { jsonrpc: '2.0', id, result: { prompts: [] } };
     }
 
     return { jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } };

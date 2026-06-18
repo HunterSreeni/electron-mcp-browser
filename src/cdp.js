@@ -18,7 +18,9 @@ export async function getActiveTab(options = {}) {
     const tabs = await listTabs(options);
     const pages = tabs.filter((tab) => tab.type === 'page' && tab.webSocketDebuggerUrl);
     if (pages.length === 0) throw new Error('No debuggable Chrome page found. Is Chrome running with --remote-debugging-port=9222?');
-    return pages.find((tab) => tab.url && !tab.url.startsWith('chrome://')) || pages[0];
+    return pages.find((tab) => tab.url?.startsWith('https://') || tab.url?.startsWith('http://'))
+        || pages.find((tab) => tab.url && !tab.url.startsWith('chrome://'))
+        || pages[0];
 }
 
 export class CdpSession {
@@ -274,7 +276,7 @@ export class NetworkMonitor {
         this.cdpOptions = cdpOptions;
         this.session = null;
         this.events = [];       // indexed by insertion order
-        this.byRequestId = {};  // requestId -> event (for response merging)
+        this.byRequestId = new Map();  // requestId -> event (for response merging)
         this.running = false;
         this.tabUrl = null;
     }
@@ -302,16 +304,16 @@ export class NetworkMonitor {
                 responseHeaders: null,
                 mimeType: null,
             };
-            this.byRequestId[p.requestId] = ev;
+            this.byRequestId.set(p.requestId, ev);
             this.events.push(ev);
             if (this.events.length > this.maxEvents) {
                 const removed = this.events.shift();
-                delete this.byRequestId[removed.requestId];
+                this.byRequestId.delete(removed.requestId);
             }
         });
 
         this.session.on('Network.responseReceived', (p) => {
-            const ev = this.byRequestId[p.requestId];
+            const ev = this.byRequestId.get(p.requestId);
             if (!ev) return;
             ev.status = p.response.status;
             ev.statusText = p.response.statusText;
@@ -344,12 +346,14 @@ export class NetworkMonitor {
 
     clear() {
         this.events = [];
-        this.byRequestId = {};
+        this.byRequestId = new Map();
     }
 
     stop() {
         if (this.session) this.session.close();
         this.session = null;
         this.running = false;
+        this.events = [];
+        this.byRequestId = new Map();
     }
 }

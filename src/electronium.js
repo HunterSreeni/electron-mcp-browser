@@ -57,7 +57,7 @@ async function handle(req, res) {
         const url = new URL(req.url, `http://${req.headers.host}`);
 
         if (url.pathname === '/health') {
-            sendJson(res, 200, { ok: true, name: 'electronium-browser', mode: 'observe-first', cdpPort: CDP_PORT });
+            sendJson(res, 200, { ok: true, name: 'electronium-browser', mode: 'observe-first' });
             return;
         }
 

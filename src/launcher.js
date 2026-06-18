@@ -38,7 +38,7 @@ const CHROME_CANDIDATES = {
 function findChromeInPath() {
     try {
         if (PLATFORM === 'win32') {
-            const found = execSync('where chrome 2>NUL', { stdio: ['ignore', 'pipe', 'ignore'] })
+            const found = execSync('where chrome', { stdio: ['ignore', 'pipe', 'ignore'] })
                 .toString().trim().split('\n')[0].trim();
             if (found && existsSync(found)) return found;
         } else {
