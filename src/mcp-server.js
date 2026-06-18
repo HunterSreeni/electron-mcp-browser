@@ -118,7 +118,7 @@ const TOOLS = [
     },
     {
         name: 'electronium_type',
-        description: 'Request to type text into a CSS selector. Queues the action - call electronium_approve to execute.',
+        description: 'Request to type text into a CSS selector. Queues the action - call electronium_approve to execute. Use slow_type for rich-text editors like Medium, Notion, or Google Docs.',
         inputSchema: {
             type: 'object',
             required: ['selector', 'text', 'reason'],
@@ -126,6 +126,7 @@ const TOOLS = [
                 selector: { type: 'string', description: 'CSS selector of the target input element' },
                 text: { type: 'string', description: 'Text to type' },
                 reason: { type: 'string', description: 'Why this input is needed' },
+                slow_type: { type: 'boolean', description: 'If true, simulate real keystrokes character by character (keydown/char/keyup per character). Required for ProseMirror-based editors (Medium, Notion, Google Docs). Slower but fires the full keystroke event sequence.' },
             },
         },
     },
@@ -295,13 +296,14 @@ async function callTool(name, args) {
     }
 
     if (name === 'electronium_type') {
-        const { selector, text, reason } = args;
+        const { selector, text, reason, slow_type } = args;
         if (!selector) return errorResult('selector is required');
         if (text === undefined) return errorResult('text is required');
         if (!reason) return errorResult('reason is required');
-        const queued = queueAction('type', { selector, text }, reason);
+        const queued = queueAction('type', { selector, text, slowType: !!slow_type }, reason);
         if (queued.error) return errorResult(queued.error);
-        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Type into "${selector}" is queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
+        const modeNote = slow_type ? ' (slow keystroke mode)' : '';
+        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Type into "${selector}"${modeNote} is queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
     }
 
     if (name === 'electronium_list_pending') {
@@ -320,7 +322,7 @@ async function callTool(name, args) {
         else if (action.type === 'click_text') result = await clickText(action.args.text, opts);
         else if (action.type === 'click_selector') result = await clickSelector(action.args.selector, opts);
         else if (action.type === 'evaluate') result = await evaluate(action.args.expression, opts);
-        else if (action.type === 'type') result = await typeText(action.args.selector, action.args.text, opts);
+        else if (action.type === 'type') result = await typeText(action.args.selector, action.args.text, { ...opts, slowType: action.args.slowType });
         else if (action.type === 'network_response_body') result = await networkMonitor.getResponseBody(action.args.request_id);
         else return errorResult(`Unknown action type: ${action.type}`);
         return jsonContent({ ok: true, executed: action, result });

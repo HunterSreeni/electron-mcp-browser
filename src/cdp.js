@@ -241,6 +241,7 @@ export async function evaluate(expression, options = {}) {
 }
 
 export async function typeText(selector, text, options = {}) {
+    const { slowType = false, ...cdpOptions } = options;
     return withActivePage(async (session) => {
         // Focus element and clear it using the native value setter to bypass React/Vue property interception
         const expression = `(() => {
@@ -258,16 +259,29 @@ export async function typeText(selector, text, options = {}) {
                 el.textContent = '';
                 el.dispatchEvent(new Event('input', { bubbles: true }));
             }
-            return { ok: true, tag: el.tagName };
+            return { ok: true, tag: el.tagName, isContentEditable: el.isContentEditable };
         })()`;
         const focusResult = await session.send('Runtime.evaluate', { expression, returnByValue: true });
         const focusVal = focusResult.result?.value;
         if (!focusVal?.ok) return focusVal || { ok: false, error: 'No result returned' };
 
-        // Insert text via CDP which works across React, Vue, Angular, and plain DOM
-        await session.send('Input.insertText', { text });
-        return { ok: true, action: 'typeText', selector, tag: focusVal.tag, length: text.length };
-    }, options);
+        if (slowType) {
+            // Character-by-character keystroke simulation - fires keydown/char/keyup per character.
+            // Required for ProseMirror-based editors (Medium, Notion, Google Docs) that build
+            // internal document state from the full keystroke sequence, not just the input event.
+            for (const char of text) {
+                await session.send('Input.dispatchKeyEvent', { type: 'keyDown', text: char, key: char, unmodifiedText: char });
+                await session.send('Input.dispatchKeyEvent', { type: 'char',    text: char, key: char, unmodifiedText: char });
+                await session.send('Input.dispatchKeyEvent', { type: 'keyUp',   text: char, key: char, unmodifiedText: char });
+            }
+        } else {
+            // Bulk insert - single Input.insertText fires one input event.
+            // Works for React, Vue, Angular and plain DOM inputs.
+            await session.send('Input.insertText', { text });
+        }
+
+        return { ok: true, action: 'typeText', selector, tag: focusVal.tag, length: text.length, slowType };
+    }, cdpOptions);
 }
 
 export class NetworkMonitor {
