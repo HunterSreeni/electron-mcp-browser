@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
-import { captureScreenshot, clickText, clickSelector, evaluate, getPageSnapshot, listTabs, navigateTo, typeText, maximizeWindow, NetworkMonitor } from './cdp.js';
+import { captureScreenshot, clickText, clickSelector, evaluate, getPageSnapshot, listTabs, navigateTo, typeText, maximizeWindow, patchAutomationSignals, NetworkMonitor } from './cdp.js';
 import { launchChrome } from './launcher.js';
 
 const CDP_PORT = Number(process.env.ELECTRONIUM_CDP_PORT || 9222);
@@ -389,7 +389,8 @@ async function callTool(name, args) {
         for (let i = 0; i < 20; i++) {
             try {
                 await fetch(`http://127.0.0.1:${port}/json/version`);
-                try { await maximizeWindow({ port }); } catch { /* non-fatal - window may not be ready yet */ }
+                try { await maximizeWindow({ port }); } catch { /* non-fatal */ }
+                try { await patchAutomationSignals({ port }); } catch { /* non-fatal */ }
                 return jsonContent({ ok: true, launched: true, pid: launched.pid, chromePath: launched.chromePath, dataDir: launched.dataDir, port });
             } catch { /* not ready yet */ }
             await new Promise((r) => setTimeout(r, 500));

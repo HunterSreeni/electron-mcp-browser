@@ -240,6 +240,17 @@ export async function evaluate(expression, options = {}) {
     }, options);
 }
 
+export async function patchAutomationSignals(options = {}) {
+    // Replaces --disable-blink-features=AutomationControlled (which triggers Chrome's
+    // "unsupported flag" warning banner). Patches navigator.webdriver to undefined via
+    // CDP so anti-bot checks see a normal browser, with no visible Chrome warning.
+    return withActivePage(async (session) => {
+        const patch = `Object.defineProperty(navigator, 'webdriver', { get: () => undefined });`;
+        await session.send('Page.addScriptToEvaluateOnNewDocument', { source: patch });
+        await session.send('Runtime.evaluate', { expression: patch, returnByValue: true });
+    }, options);
+}
+
 export async function maximizeWindow(options = {}) {
     const { host = DEFAULT_HOST, port = DEFAULT_PORT } = options;
 
