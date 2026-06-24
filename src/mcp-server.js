@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
-import { captureScreenshot, clickText, clickSelector, evaluate, getPageSnapshot, listTabs, navigateTo, openNewTab, typeText, maximizeWindow, patchAutomationSignals, NetworkMonitor } from './cdp.js';
+import { captureScreenshot, clickText, clickSelector, evaluate, getPageSnapshot, listTabs, navigateTo, openNewTab, switchTab, typeText, maximizeWindow, patchAutomationSignals, NetworkMonitor } from './cdp.js';
 import { launchChrome } from './launcher.js';
 
 const CDP_PORT = Number(process.env.ELECTRONIUM_CDP_PORT || 9222);
@@ -66,6 +66,17 @@ const TOOLS = [
         name: 'electronium_screenshot',
         description: 'Capture a screenshot of the active page. No approval needed.',
         inputSchema: { type: 'object', properties: {} },
+    },
+    {
+        name: 'electronium_switch_tab',
+        description: 'Switch the active browser tab by tab id. Use electronium_tabs first to get the id. All subsequent tools (snapshot, click, type, etc.) will operate on the switched-to tab. No approval needed.',
+        inputSchema: {
+            type: 'object',
+            required: ['tab_id'],
+            properties: {
+                tab_id: { type: 'string', description: 'Tab id from electronium_tabs' },
+            },
+        },
     },
     // --- Action tools (queue for human approval) ---
     {
@@ -248,6 +259,13 @@ async function callTool(name, args) {
     if (name === 'electronium_tabs') {
         const tabs = await listTabs(opts);
         return jsonContent(tabs.map((t) => ({ id: t.id, type: t.type, title: t.title, url: t.url })));
+    }
+
+    if (name === 'electronium_switch_tab') {
+        const { tab_id } = args;
+        if (!tab_id) return errorResult('tab_id is required');
+        const result = await switchTab(tab_id, opts);
+        return jsonContent({ ok: true, active: { id: result.id, url: result.url, title: result.title }, message: `Switched to tab "${result.title}". All subsequent tools now operate on this tab.` });
     }
 
     if (name === 'electronium_page_snapshot') {

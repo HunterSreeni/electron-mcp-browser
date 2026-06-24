@@ -167,6 +167,23 @@ export async function openNewTab(url, { host = DEFAULT_HOST, port = DEFAULT_PORT
     return { ok: true, action: 'openNewTab', id: tab.id, url: tab.url, title: tab.title };
 }
 
+export async function switchTab(tabId, { host = DEFAULT_HOST, port = DEFAULT_PORT } = {}) {
+    const tabs = await listTabs({ host, port });
+    const tab = tabs.find((t) => t.id === tabId);
+    if (!tab) throw new Error(`No tab found with id "${tabId}". Call electronium_tabs to list available ids.`);
+    const version = await jsonGet('/json/version', { host, port });
+    const browserWsUrl = version.webSocketDebuggerUrl;
+    if (!browserWsUrl) throw new Error('No browser WebSocket URL in /json/version');
+    const session = new CdpSession(browserWsUrl);
+    await session.connect();
+    try {
+        await session.send('Target.activateTarget', { targetId: tabId });
+    } finally {
+        session.close();
+    }
+    return { ok: true, action: 'switchTab', id: tab.id, url: tab.url, title: tab.title };
+}
+
 export async function navigateTo(url, options = {}) {
     if (BLOCKED_SCHEMES.some((s) => url.toLowerCase().startsWith(s))) {
         throw new Error(`Blocked URL scheme: ${url}`);
