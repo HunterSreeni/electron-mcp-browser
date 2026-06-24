@@ -180,9 +180,9 @@ Usage:
   node src/electronium.js type <sel> <text>  Type text into CSS selector
 
 Manual Chrome launch commands by platform:
-  Windows:  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\\electronium-profile" --disable-blink-features=AutomationControlled
-  macOS:    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="~/Library/Application Support/electronium-profile" --disable-blink-features=AutomationControlled
-  Linux:    google-chrome --remote-debugging-port=9222 --user-data-dir="~/.config/electronium-profile" --disable-blink-features=AutomationControlled
+  Windows:  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\\electronium-profile" --disable-blink-features=AutomationControlled --start-maximized
+  macOS:    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="~/Library/Application Support/electronium-profile" --disable-blink-features=AutomationControlled --start-maximized
+  Linux:    google-chrome --remote-debugging-port=9222 --user-data-dir="~/.config/electronium-profile" --disable-blink-features=AutomationControlled --start-maximized
 
 Environment variables:
   ELECTRONIUM_HOST            HTTP bridge bind address (default: 127.0.0.1)

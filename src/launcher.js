@@ -101,6 +101,7 @@ export function launchChrome({ port = 9222, userDataDir, headless = false } = {}
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-infobars',
+        '--start-maximized',
     ];
 
     if (headless) args.push('--headless=new', '--disable-gpu');
@@ -117,7 +118,7 @@ export function getLaunchCommand(port = 9222) {
         darwin: '~/Library/Application Support/electronium-profile',
         linux: '~/.config/electronium-profile',
     };
-    const stealth = `--disable-blink-features=AutomationControlled --exclude-switches=enable-automation --no-first-run`;
+    const stealth = `--disable-blink-features=AutomationControlled --exclude-switches=enable-automation --no-first-run --start-maximized`;
 
     return {
         win32: `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=${port} --user-data-dir="${dataDirs.win32}" ${stealth}`,
