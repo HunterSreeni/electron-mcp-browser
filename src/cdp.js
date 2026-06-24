@@ -240,6 +240,23 @@ export async function evaluate(expression, options = {}) {
     }, options);
 }
 
+export async function maximizeWindow(options = {}) {
+    const { host = DEFAULT_HOST, port = DEFAULT_PORT } = options;
+    const version = await jsonGet('/json/version', { host, port });
+    const browserWsUrl = version.webSocketDebuggerUrl;
+    if (!browserWsUrl) throw new Error('No browser WebSocket URL in /json/version');
+    const tab = await getActiveTab({ host, port });
+    const targetId = tab.id;
+    const session = new CdpSession(browserWsUrl);
+    await session.connect();
+    try {
+        const { windowId } = await session.send('Browser.getWindowForTarget', { targetId });
+        await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'maximized' } });
+    } finally {
+        session.close();
+    }
+}
+
 export async function typeText(selector, text, options = {}) {
     const { slowType = false, ...cdpOptions } = options;
     return withActivePage(async (session) => {
