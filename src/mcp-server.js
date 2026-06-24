@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
-import { captureScreenshot, clickText, clickSelector, evaluate, getPageSnapshot, listTabs, navigateTo, typeText, maximizeWindow, patchAutomationSignals, NetworkMonitor } from './cdp.js';
+import { captureScreenshot, clickText, clickSelector, evaluate, getPageSnapshot, listTabs, navigateTo, openNewTab, typeText, maximizeWindow, patchAutomationSignals, NetworkMonitor } from './cdp.js';
 import { launchChrome } from './launcher.js';
 
 const CDP_PORT = Number(process.env.ELECTRONIUM_CDP_PORT || 9222);
@@ -77,6 +77,18 @@ const TOOLS = [
             properties: {
                 url: { type: 'string', description: 'Destination URL (https:// only)' },
                 reason: { type: 'string', description: 'Why this navigation is needed' },
+            },
+        },
+    },
+    {
+        name: 'electronium_new_tab',
+        description: 'Open a URL in a new browser tab. Bypasses popup blockers by using the CDP REST API directly. Queues the action - call electronium_approve to execute.',
+        inputSchema: {
+            type: 'object',
+            required: ['url', 'reason'],
+            properties: {
+                url: { type: 'string', description: 'URL to open in the new tab (https:// only)' },
+                reason: { type: 'string', description: 'Why a new tab is needed' },
             },
         },
     },
@@ -266,6 +278,18 @@ async function callTool(name, args) {
         return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Navigation to "${url}" is queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
     }
 
+    if (name === 'electronium_new_tab') {
+        const { url, reason } = args;
+        if (!url) return errorResult('url is required');
+        if (!reason) return errorResult('reason is required');
+        if (BLOCKED_SCHEMES.some((s) => url.toLowerCase().startsWith(s))) {
+            return errorResult(`Blocked URL scheme: ${url}`);
+        }
+        const queued = queueAction('new_tab', { url }, reason);
+        if (queued.error) return errorResult(queued.error);
+        return jsonContent({ ok: true, pending: true, action_id: queued.id, message: `Open "${url}" in a new tab is queued. Call electronium_approve("${queued.id}") to execute or electronium_deny("${queued.id}") to cancel.` });
+    }
+
     if (name === 'electronium_click_text') {
         const { text, reason } = args;
         if (!text) return errorResult('text is required');
@@ -319,6 +343,7 @@ async function callTool(name, args) {
         pendingActions.delete(action_id);
         let result;
         if (action.type === 'navigate') result = await navigateTo(action.args.url, opts);
+        else if (action.type === 'new_tab') result = await openNewTab(action.args.url, opts);
         else if (action.type === 'click_text') result = await clickText(action.args.text, opts);
         else if (action.type === 'click_selector') result = await clickSelector(action.args.selector, opts);
         else if (action.type === 'evaluate') result = await evaluate(action.args.expression, opts);

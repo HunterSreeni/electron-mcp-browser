@@ -156,6 +156,17 @@ export async function captureScreenshot(options = {}) {
     }, options);
 }
 
+export async function openNewTab(url, { host = DEFAULT_HOST, port = DEFAULT_PORT } = {}) {
+    if (BLOCKED_SCHEMES.some((s) => url.toLowerCase().startsWith(s))) {
+        throw new Error(`Blocked URL scheme: ${url}`);
+    }
+    const endpoint = `http://${host}:${port}/json/new?${encodeURIComponent(url)}`;
+    const response = await fetch(endpoint, { method: 'PUT' });
+    if (!response.ok) throw new Error(`CDP /json/new failed: ${response.status} ${response.statusText}`);
+    const tab = await response.json();
+    return { ok: true, action: 'openNewTab', id: tab.id, url: tab.url, title: tab.title };
+}
+
 export async function navigateTo(url, options = {}) {
     if (BLOCKED_SCHEMES.some((s) => url.toLowerCase().startsWith(s))) {
         throw new Error(`Blocked URL scheme: ${url}`);
