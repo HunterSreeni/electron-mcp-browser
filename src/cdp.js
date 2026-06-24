@@ -242,18 +242,50 @@ export async function evaluate(expression, options = {}) {
 
 export async function maximizeWindow(options = {}) {
     const { host = DEFAULT_HOST, port = DEFAULT_PORT } = options;
-    const version = await jsonGet('/json/version', { host, port });
-    const browserWsUrl = version.webSocketDebuggerUrl;
-    if (!browserWsUrl) throw new Error('No browser WebSocket URL in /json/version');
-    const tab = await getActiveTab({ host, port });
-    const targetId = tab.id;
-    const session = new CdpSession(browserWsUrl);
-    await session.connect();
+
+    // Primary: CDP Browser.setWindowBounds - works on Windows, Linux, and macOS
     try {
-        const { windowId } = await session.send('Browser.getWindowForTarget', { targetId });
-        await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'maximized' } });
-    } finally {
-        session.close();
+        const version = await jsonGet('/json/version', { host, port });
+        const browserWsUrl = version.webSocketDebuggerUrl;
+        if (!browserWsUrl) throw new Error('No browser WebSocket URL in /json/version');
+        const tab = await getActiveTab({ host, port });
+        const session = new CdpSession(browserWsUrl);
+        await session.connect();
+        try {
+            const { windowId } = await session.send('Browser.getWindowForTarget', { targetId: tab.id });
+            await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'maximized' } });
+            return;
+        } finally {
+            session.close();
+        }
+    } catch { /* fall through to OS-level fallback */ }
+
+    // macOS fallback: --start-maximized is ignored on macOS; use osascript instead.
+    // Gets screen dimensions from Finder then sets the Chrome window bounds to fill the display.
+    if (process.platform === 'darwin') {
+        try {
+            const { execSync } = await import('node:child_process');
+            const raw = execSync(
+                `osascript -e 'tell application "Finder" to get bounds of window of desktop'`,
+                { stdio: ['ignore', 'pipe', 'ignore'] }
+            ).toString().trim();
+            const [x, y, w, h] = raw.split(',').map((s) => Number(s.trim()));
+            const setCmd = (app) =>
+                `osascript -e 'tell application "${app}" to set bounds of front window to {${x}, ${y}, ${w}, ${h}}'`;
+            for (const app of ['Google Chrome', 'Chromium', 'Microsoft Edge']) {
+                try { execSync(setCmd(app), { stdio: 'ignore' }); return; } catch { /* try next */ }
+            }
+        } catch { /* osascript unavailable */ }
+        return;
+    }
+
+    // Linux fallback: wmctrl maximizes the active window on X11 desktops.
+    // wmctrl is not installed by default - silent fail if missing.
+    if (process.platform === 'linux') {
+        try {
+            const { execSync } = await import('node:child_process');
+            execSync('wmctrl -r :ACTIVE: -b add,maximized_vert,maximized_horz', { stdio: 'ignore' });
+        } catch { /* wmctrl not installed */ }
     }
 }
 

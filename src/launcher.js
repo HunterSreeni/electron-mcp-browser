@@ -101,8 +101,10 @@ export function launchChrome({ port = 9222, userDataDir, headless = false } = {}
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-infobars',
-        '--start-maximized',
     ];
+
+    // --start-maximized works on Linux and is a hint on Windows; ignored on macOS (osascript handles it)
+    if (PLATFORM !== 'darwin') args.push('--start-maximized');
 
     if (headless) args.push('--headless=new', '--disable-gpu');
 
