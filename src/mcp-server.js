@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { captureScreenshot, clickText, clickSelector, evaluate, getPageSnapshot, listTabs, navigateTo, openNewTab, switchTab, typeText, maximizeWindow, patchAutomationSignals, NetworkMonitor } from './cdp.js';
 import { launchChrome } from './launcher.js';
 
 const CDP_PORT = Number(process.env.ELECTRONIUM_CDP_PORT || 9222);
+const SCREENSHOT_DIR = process.env.ELECTRONIUM_SCREENSHOT_DIR || os.tmpdir();
 const SERVER_NAME = 'electronium-browser';
 const SERVER_VERSION = '0.2.0';
 
@@ -54,18 +58,23 @@ const TOOLS = [
     },
     {
         name: 'electronium_page_snapshot',
-        description: 'Get the full visible text of the active page (up to 8000 chars). No approval needed.',
+        description: 'Get the visible text of the active page (up to 3000 chars by default). No approval needed.',
         inputSchema: {
             type: 'object',
             properties: {
-                max_chars: { type: 'number', description: 'Max characters to return (default 8000)' },
+                max_chars: { type: 'number', description: 'Max characters to return (default 3000, max 8000)' },
             },
         },
     },
     {
         name: 'electronium_screenshot',
-        description: 'Capture a screenshot of the active page. No approval needed.',
-        inputSchema: { type: 'object', properties: {} },
+        description: 'Capture a screenshot of the active page. Saves to disk by default and returns the file path - no image data in context. Pass inline:true only when you need to actually see the image. No approval needed.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                inline: { type: 'boolean', description: 'If true, return base64 image data in context (expensive - use sparingly). Default false saves to file and returns path.' },
+            },
+        },
     },
     {
         name: 'electronium_switch_tab',
@@ -189,15 +198,15 @@ const TOOLS = [
     },
     {
         name: 'electronium_network_events',
-        description: 'Get captured network requests. Filter by resourceType (XHR, Fetch, Document, Script, Stylesheet, Image, Font, Other), HTTP method, or URL substring.',
+        description: 'Get captured network requests. Returns compact summary by default (url, method, status, type only). Filter by resourceType, method, or URL substring.',
         inputSchema: {
             type: 'object',
             properties: {
                 resourceType: { type: 'string', description: 'Filter by type: XHR, Fetch, Document, Script, Stylesheet, Image, Font, Media, WebSocket, Other' },
                 method: { type: 'string', description: 'Filter by HTTP method: GET, POST, PUT, DELETE, etc.' },
                 urlContains: { type: 'string', description: 'Filter to URLs containing this string' },
-                limit: { type: 'number', description: 'Max events to return (default 100)' },
-                minimal: { type: 'boolean', description: 'If true, return only url, method, status, resourceType per event (omits headers and postData)' },
+                limit: { type: 'number', description: 'Max events to return (default 20)' },
+                minimal: { type: 'boolean', description: 'Return compact summary only - url, method, status, type (default true). Set false to include request/response headers and postData.' },
             },
         },
     },
@@ -269,19 +278,28 @@ async function callTool(name, args) {
     }
 
     if (name === 'electronium_page_snapshot') {
-        const maxChars = Math.min(Number(args.max_chars || 8000), 8000);
+        const maxChars = Math.min(Number(args.max_chars || 3000), 8000);
         const page = await getPageSnapshot(opts);
         return textContent(page.text.slice(0, maxChars));
     }
 
     if (name === 'electronium_screenshot') {
         const shot = await captureScreenshot(opts);
-        return {
-            content: [
-                { type: 'image', data: shot.data, mimeType: 'image/png' },
-                { type: 'text', text: `Screenshot captured from: ${shot.url}` },
-            ],
-        };
+        if (args.inline) {
+            return {
+                content: [
+                    { type: 'image', data: shot.data, mimeType: 'image/png' },
+                    { type: 'text', text: `Screenshot from: ${shot.url}` },
+                ],
+            };
+        }
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filename = `electronium-${ts}.png`;
+        const outPath = path.join(SCREENSHOT_DIR, filename);
+        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+        await fs.writeFile(outPath, Buffer.from(shot.data, 'base64'));
+        const sizeKb = Math.round(Buffer.byteLength(shot.data, 'base64') * 0.75 / 1024);
+        return jsonContent({ ok: true, path: outPath, url: shot.url, size: `${sizeKb}KB` });
     }
 
     if (name === 'electronium_navigate') {
@@ -395,7 +413,8 @@ async function callTool(name, args) {
             limit: args.limit,
         });
         if (events.length === 0) return textContent('No network events captured yet (or none match the filter).');
-        if (args.minimal) {
+        const minimal = args.minimal !== false;
+        if (minimal) {
             return jsonContent(events.map((e) => ({ requestId: e.requestId, url: e.url, method: e.method, status: e.status, resourceType: e.resourceType, initiator: e.initiator })));
         }
         return jsonContent(events);

@@ -130,7 +130,7 @@ export async function getPageSnapshot(options = {}) {
             returnByValue: true,
         });
         const bodyText = await session.send('Runtime.evaluate', {
-            expression: 'document.body ? document.body.innerText.slice(0, 8000) : ""',
+            expression: 'document.body ? document.body.innerText.slice(0, 3000) : ""',
             returnByValue: true,
         });
         return {
@@ -438,7 +438,7 @@ export class NetworkMonitor {
         }
     }
 
-    getEvents({ resourceType, method, urlContains, limit = 100 } = {}) {
+    getEvents({ resourceType, method, urlContains, limit = 20 } = {}) {
         let results = [...this.events];
         if (resourceType) results = results.filter((e) => e.resourceType.toLowerCase() === resourceType.toLowerCase());
         if (method) results = results.filter((e) => e.method.toLowerCase() === method.toLowerCase());
